@@ -8,6 +8,7 @@ and (with a free Groq key) an LLM phrases the answer from ONLY the retrieved row
 """
 import os
 import re
+import json
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -214,22 +215,71 @@ def templated_answer(e, rows, meta):
     return "Here's what I found."
 
 
-def llm_answer(text, rows):
+def build_context(e, rows, meta):
+    """Gather grounded supporting facts so the LLM can explain, not just state."""
+    s = meta.get("scope")
+    metric = e["metric"]
+    ctx = {"metric": LABEL[metric], "unit": UNIT[metric], "scope": s}
+    if rows is None or rows.empty:
+        return ctx
+    has_thr = metric != "primary"
+    thr = 30 if metric != "tree_cover" else e["threshold"]
+    if s in ("single", "region"):
+        ctx["place"] = e["region"] if s == "region" else e["country"]
+        ctx["country"] = e["country"]
+        ctx["year"] = meta.get("year")
+        ctx["value"] = round(float(rows["value"].iloc[0]), 1)
+        tr = (get_region_trend(e["country"], e["region"], metric) if s == "region"
+              else get_trend(e["country"], metric, thr))
+        ctx["yearly"] = [{"year": int(r["year"]), "value": round(float(r["value"]), 1)}
+                         for _, r in tr.iterrows()]
+        try:
+            if s == "single":
+                w = "year=? " + ("AND threshold=? " if has_thr else "") + f"AND {VAL[metric]} > ?"
+                p = (ctx["year"], thr, ctx["value"]) if has_thr else (ctx["year"], ctx["value"])
+                higher = q(f"SELECT COUNT(*) c FROM {TBL_C[metric]} WHERE {w}", p)["c"].iloc[0]
+                total = q(f"SELECT COUNT(DISTINCT country) c FROM {TBL_C[metric]} WHERE year=?", (ctx["year"],))["c"].iloc[0]
+                ctx["rank_among_countries"] = int(higher) + 1
+                ctx["total_countries"] = int(total)
+            else:
+                w = "country=? AND year=? " + ("AND threshold=30 " if has_thr else "") + f"AND {VAL[metric]} > ?"
+                higher = q(f"SELECT COUNT(*) c FROM {TBL_S[metric]} WHERE {w}", (e["country"], ctx["year"], ctx["value"]))["c"].iloc[0]
+                total = q(f"SELECT COUNT(DISTINCT subnational1) c FROM {TBL_S[metric]} WHERE country=? AND year=?", (e["country"], ctx["year"]))["c"].iloc[0]
+                ctx["rank_among_regions_in_country"] = int(higher) + 1
+                ctx["total_regions_in_country"] = int(total)
+        except Exception:
+            pass
+    elif s in ("rank", "subnational"):
+        ctx["place"] = e.get("country")
+        ctx["ranking"] = [{k: (round(float(v), 1) if isinstance(v, (int, float)) else v)
+                           for k, v in r.items()} for r in rows.head(10).to_dict("records")]
+        ctx.update({k: v for k, v in meta.items() if k != "scope"})
+    elif s in ("trend", "region_trend"):
+        ctx["place"] = e["region"] if s == "region_trend" else e["country"]
+        ctx["yearly"] = [{"year": int(r["year"]), "value": round(float(r["value"]), 1)}
+                         for _, r in rows.iterrows()]
+    return ctx
+
+
+def llm_answer(text, context):
     key = os.getenv("LLM_API_KEY") or (st.secrets.get("LLM_API_KEY", "") if hasattr(st, "secrets") else "")
-    if not key or rows.empty:
+    if not key or not context:
+        return None
+    if context.get("value") is None and "ranking" not in context and "yearly" not in context:
         return None
     import httpx
-    data = rows.head(12).to_dict("records")
-    sys = ("You answer questions about Global Forest Watch deforestation/carbon data. "
-           "Use ONLY the data provided - never invent numbers. Under 120 words, "
-           "commas in numbers, natural tone for a non-expert.")
-    usr = f"Question: {text}\n\nData: {data}\n\nAnswer using only this data."
+    sys = ("You are a forest and climate data analyst. Answer the user's question in 2-4 sentences. "
+           "First give the headline figure, then add one or two insights grounded ONLY in the provided data - "
+           "for example how the value ranks among countries or regions, the overall trend direction, how it "
+           "compares to other years, or notable peak years. Never invent any number that is not in the data. "
+           "Format numbers with commas and write clearly for a non-expert. Do not mention JSON or 'the data'.")
+    usr = f"Question: {text}\n\nGrounded data (JSON):\n{json.dumps(context)}\n\nWrite the explanatory answer."
     try:
         r = httpx.post(os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1/chat/completions"),
                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                        json={"model": os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
                              "messages": [{"role": "system", "content": sys}, {"role": "user", "content": usr}],
-                             "max_tokens": 300, "temperature": 0.4}, timeout=30.0)
+                             "max_tokens": 500, "temperature": 0.5}, timeout=30.0)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
     except Exception:
@@ -295,7 +345,8 @@ if prompt:
 
     e = parse(prompt)
     rows, meta = retrieve(e)
-    ans = llm_answer(prompt, rows) or templated_answer(e, rows, meta)
+    ctx = build_context(e, rows, meta)
+    ans = llm_answer(prompt, ctx) or templated_answer(e, rows, meta)
 
     with st.chat_message("assistant"):
         st.markdown(ans)
