@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Data (large/raw - not committed; demo ships its own small DB under demo/data/)
+/data/raw/*
+/data/processed/*
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+*.db-wal
+*.db-journal
+*.bak
+
+# Secrets
+.streamlit/secrets.toml
+.env
+
+# OS / editor
+.DS_Store
+
+# Personal (do not publish)
+RESUME_BULLETS.md

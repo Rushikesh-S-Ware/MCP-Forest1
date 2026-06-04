@@ -1,0 +1,41 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install UV
+RUN pip install --no-cache-dir uv
+
+# Copy files needed for installation
+COPY pyproject.toml ./
+COPY README.md ./
+
+# Copy only MCP-related code (minimal attack surface)
+COPY src/nexus/mcp/ ./src/nexus/mcp/
+COPY src/nexus/config/ ./src/nexus/config/
+COPY src/nexus/data/metadata/ ./src/nexus/data/metadata/
+COPY src/nexus/__init__.py ./src/nexus/
+
+# Override UV config to use system Python
+ENV UV_PYTHON_PREFERENCE=system \
+    UV_PYTHON=/usr/local/bin/python3.12
+
+# Install production dependencies
+RUN uv pip install --system -e .
+
+# Copy metadata
+COPY config/metadata/ ./config/metadata/
+
+# Create data directory
+RUN mkdir -p /app/data/processed
+
+# Set environment variables
+ENV PYTHONPATH=/app/src \
+    PROJECT_ROOT=/app \
+    DATABASE_PATH=/app/data/processed/forest.db
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD test -f /app/data/processed/forest.db || exit 1
+
+# Run MCP server
+CMD ["python", "-m", "nexus.mcp.mcp_stdio_server"]

@@ -1,0 +1,196 @@
+{
+  "thresholds": [
+    0,
+    10,
+    15,
+    20,
+    25,
+    30,
+    50,
+    75
+  ],
+  "tropical_countries": [
+    "M\u00e9xico",
+    "Nicaragua",
+    "United States",
+    "Angola",
+    "Guinea-Bissau",
+    "Costa Rica",
+    "Peru",
+    "Haiti",
+    "Benin",
+    "Venezuela",
+    "Cambodia",
+    "Paraguay",
+    "Central African Republic",
+    "Colombia",
+    "Brazil",
+    "Honduras",
+    "Zimbabwe",
+    "Malawi",
+    "Myanmar",
+    "Solomon Islands",
+    "Ecuador",
+    "Liberia",
+    "Laos",
+    "Virgin Islands, U.S.",
+    "Bolivia",
+    "Argentina",
+    "Australia",
+    "Gabon",
+    "Thailand",
+    "Equatorial Guinea",
+    "Guyana",
+    "Tanzania",
+    "South Sudan",
+    "India",
+    "Indonesia",
+    "Kenya",
+    "El Salvador",
+    "Republic of the Congo",
+    "Guadeloupe",
+    "Papua New Guinea",
+    "Fiji",
+    "Bhutan",
+    "Nepal",
+    "Suriname",
+    "Togo",
+    "Brunei",
+    "Dominican Republic",
+    "Martinique",
+    "China",
+    "Mozambique",
+    "Sierra Leone",
+    "Zambia",
+    "Cameroon",
+    "Democratic Republic of the Congo",
+    "Senegal",
+    "Uganda",
+    "Vanuatu",
+    "Panama",
+    "Philippines",
+    "Madagascar",
+    "Sri Lanka",
+    "Vietnam",
+    "Malaysia",
+    "Cuba",
+    "Ethiopia",
+    "South Africa",
+    "Guatemala",
+    "C\u00f4te d'Ivoire",
+    "Ghana",
+    "French Guiana",
+    "Burundi",
+    "Rwanda",
+    "Nigeria",
+    "Bangladesh",
+    "Guinea"
+  ],
+  "year_ranges": {
+    "tree_cover": [
+      2001,
+      2024
+    ],
+    "primary_forest": [
+      2002,
+      2024
+    ],
+    "carbon": [
+      2001,
+      2024
+    ]
+  },
+  "sql_templates": {
+    "primary_percentage": "\n        SELECT \n            t.country,\n            t.year,\n            t.tree_cover_loss_ha,\n            p.primary_forest_loss_ha,\n            CASE \n                WHEN t.tree_cover_loss_ha > 0 \n                THEN ROUND((p.primary_forest_loss_ha / t.tree_cover_loss_ha) * 100, 2)\n                ELSE NULL \n            END as primary_percentage\n        FROM fact_tree_cover_loss t\n        LEFT JOIN fact_primary_forest p\n            ON t.country = p.country \n            AND t.year = p.year\n        WHERE t.threshold = 30 {additional_conditions}\n    ",
+    "carbon_intensity": "\n        SELECT \n            t.country,\n            t.year,\n            t.threshold,\n            t.tree_cover_loss_ha,\n            c.carbon_emissions_mg_co2e,\n            CASE \n                WHEN t.tree_cover_loss_ha > 0 \n                THEN ROUND(c.carbon_emissions_mg_co2e / t.tree_cover_loss_ha, 2)\n                ELSE NULL \n            END as carbon_per_hectare\n        FROM fact_tree_cover_loss t\n        INNER JOIN fact_carbon c\n            ON t.country = c.country\n            AND t.year = c.year\n            AND t.threshold = c.threshold\n        WHERE 1=1 {additional_conditions}\n    ",
+    "trend_analysis": "\n        SELECT \n            year,\n            SUM(tree_cover_loss_ha) as total_loss_ha\n        FROM fact_tree_cover_loss\n        WHERE threshold = {threshold} {additional_conditions}\n        GROUP BY year\n        ORDER BY year\n    ",
+    "country_ranking": "\n        SELECT \n            country,\n            SUM(tree_cover_loss_ha) as total_loss_ha\n        FROM fact_tree_cover_loss\n        WHERE threshold = {threshold}\n            AND year BETWEEN {start_year} AND {end_year}\n        GROUP BY country\n        ORDER BY total_loss_ha DESC\n        LIMIT {limit}\n    "
+  },
+  "nl_column_mappings": {
+    "forest loss": "tree_cover_loss_ha",
+    "primary forest": "primary_forest_loss_ha",
+    "carbon emissions": "carbon_emissions_mg_co2e",
+    "intensity": "carbon_per_hectare",
+    "percentage": "primary_percentage"
+  },
+  "query_patterns": {
+    "primary_percentage": [
+      "percentage of primary",
+      "proportion of virgin forest"
+    ],
+    "carbon_intensity": [
+      "carbon intensity",
+      "emissions per hectare"
+    ],
+    "trend": [
+      "trend",
+      "over time"
+    ],
+    "ranking": [
+      "top",
+      "highest",
+      "most"
+    ],
+    "comparison": [
+      "compare",
+      "versus"
+    ],
+    "aggregation": [
+      "total",
+      "sum"
+    ]
+  },
+  "table_schemas": {
+    "fact_tree_cover_loss": {
+      "columns": [
+        "country",
+        "year",
+        "threshold",
+        "tree_cover_loss_ha"
+      ],
+      "primary_key": [
+        "country",
+        "year",
+        "threshold"
+      ],
+      "value_column": "tree_cover_loss_ha"
+    },
+    "fact_primary_forest": {
+      "columns": [
+        "country",
+        "year",
+        "primary_forest_loss_ha"
+      ],
+      "primary_key": [
+        "country",
+        "year"
+      ],
+      "value_column": "primary_forest_loss_ha"
+    },
+    "fact_carbon": {
+      "columns": [
+        "country",
+        "year",
+        "threshold",
+        "carbon_emissions_mg_co2e"
+      ],
+      "primary_key": [
+        "country",
+        "year",
+        "threshold"
+      ],
+      "value_column": "carbon_emissions_mg_co2e"
+    }
+  },
+  "join_conditions": {
+    "tree_cover_to_primary": [
+      "t.country = p.country",
+      "t.year = p.year"
+    ],
+    "tree_cover_to_carbon": [
+      "t.country = c.country",
+      "t.year = c.year",
+      "t.threshold = c.threshold"
+    ]
+  }
+}

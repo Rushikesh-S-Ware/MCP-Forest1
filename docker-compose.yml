@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  pipeline:
+    image: nexus-pipeline:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    container_name: nexus-pipeline
+    volumes:
+      - ./data/raw:/app/data/raw:ro
+      - processed-data:/app/data/processed
+      - ./config/metadata:/app/config/metadata
+    environment:
+      - PROJECT_ROOT=/app
+      - DATABASE_PATH=/app/data/processed/forest.db
+      - LOG_LEVEL=INFO
+    command: ["--drop-existing"]
+    profiles:
+      - pipeline
+
+  test:
+    image: nexus-test:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    container_name: nexus-test
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    volumes:
+      - processed-data:/app/data/processed:ro
+      - ./test-reports:/app/test-reports
+    environment:
+      - PROJECT_ROOT=/app
+      - DATABASE_PATH=/app/data/processed/forest.db
+      - PYTEST_ARGS=-v --cov=src/nexus --cov-report=html:/app/test-reports
+    command: ["all"]
+    profiles:
+      - test
+
+  mcp-server:
+    image: nexus-mcp-server:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    container_name: nexus-mcp-server
+    volumes:
+      - processed-data:/app/data/processed:ro
+      - ./config/metadata:/app/config/metadata:ro
+    environment:
+      - PROJECT_ROOT=/app
+      - DATABASE_PATH=/app/data/processed/forest.db
+      # --- LLM narrative layer (provider-agnostic, OpenAI-compatible) ---
+      # Default: Groq + Llama 3.3 70B (free tier, fast). Set LLM_API_KEY to a
+      # free key from https://console.groq.com. For local Ollama instead, set
+      # LLM_BASE_URL=http://host.docker.internal:11434/v1/chat/completions and
+      # LLM_MODEL=llama3.1:8b (no key needed).
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.groq.com/openai/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-llama-3.3-70b-versatile}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/data/processed/forest.db"]
+  

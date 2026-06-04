@@ -1,0 +1,26 @@
+{
+  "row_counts": {
+    "fact_tree_cover_loss": 31680,
+    "fact_primary_forest": 1650,
+    "fact_carbon": 11880,
+    "fact_subnational_tree_cover_loss": 546048,
+    "fact_subnational_primary_forest": 23320,
+    "fact_subnational_carbon": 204768
+  },
+  "last_update": "2026-06-04T13:48:21.633712",
+  "data_quality": {
+    "completeness": 1.0,
+    "accuracy": 1.0,
+    "consistency": 1.0
+  },
+  "avg_query_time": 0.0,
+  "cache_hit_rate": 0.0,
+  "error_rate": 0.0,
+  "pipeline_version": "1.0.0",
+  "last_pipeline_run": "2026-06-04T13:48:21.633710",
+  "validation_status": {
+    "fact_tree_cover_loss": "PASS",
+    "fact_primary_forest": "PASS",
+    "fact_carbon": "PASS"
+  }
+}

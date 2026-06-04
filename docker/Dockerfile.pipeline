@@ -1,0 +1,47 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install UV
+RUN pip install --no-cache-dir uv
+
+# Copy files needed for installation
+COPY pyproject.toml ./
+COPY README.md ./
+COPY src/ ./src/
+
+# ✅ CRITICAL: Override UV config to use system Python
+# Set environment variables that override pyproject.toml
+ENV UV_PYTHON_PREFERENCE=system \
+    UV_PYTHON=/usr/local/bin/python3.12
+
+# Install with UV using system Python
+RUN uv pip install --system -e .
+
+# Copy remaining application files
+COPY config/ ./config/
+
+# Create required directories
+RUN mkdir -p /app/data/raw \
+             /app/data/processed \
+             /app/data/cache \
+             /app/config/metadata
+
+# Set environment variables
+ENV PYTHONPATH=/app/src \
+    PROJECT_ROOT=/app \
+    DATA_DIR=/app/data \
+    CONFIG_DIR=/app/config \
+    DATABASE_PATH=/app/data/processed/forest.db
+
+# Copy and set up entrypoint
+COPY docker-entrypoint-pipeline.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--help"]

@@ -1,0 +1,229 @@
+Nexus Data Pipeline Documentation
+Overview
+The Nexus data pipeline transforms the Global Forest Watch Forest Carbon Monitoring Dataset from Excel format into a structured SQLite database optimized for natural language queries. The system processes approximately 37,000 rows of forest monitoring data spanning 165 countries and 24 years into three specialized fact tables.
+Data Loading Process
+Source Data Structure
+The pipeline ingests data from a single Excel file (global_05212025.xlsx) containing three critical worksheets:
+
+Country tree cover loss - Contains deforestation data for all 165 countries across 8 tree canopy density thresholds (0%, 10%, 15%, 20%, 25%, 30%, 50%, 75%) from 2001-2024
+Country primary loss - Contains virgin/old-growth forest loss data exclusively for 75 tropical countries at a fixed 30% threshold from 2002-2023
+Country carbon data - Contains carbon emissions and sequestration data for all countries but only at three thresholds (30%, 50%, 75%) from 2001-2024
+
+Loading Mechanism
+The loader uses Polars DataFrame library for memory-efficient processing. Each Excel sheet is loaded into memory with automatic caching to avoid redundant file reads. The loader validates that all required sheets exist before proceeding and maintains a registry of loaded data for performance optimization.
+Data Transformation Architecture
+Three-Table Design Philosophy
+The transformation process deliberately creates three separate fact tables instead of a unified sparse matrix. This critical design decision avoids the ~60% NULL values that would result from a single table approach, as primary forest data only exists for tropical countries and carbon data only exists at specific thresholds.
+Transformation Process
+Wide-to-Long Format Conversion
+The Excel data arrives in "wide" format with separate columns for each year (e.g., tc_loss_ha_2001, tc_loss_ha_2002). The transformers convert this to "long" format where year becomes a data dimension, creating one row per country-year-threshold combination.
+Tree Cover Loss Transformation
+
+Input: ~1,320 rows (165 countries × 8 thresholds)
+Output: ~31,680 rows (165 countries × 24 years × 8 thresholds)
+Computed Fields:
+
+Loss rate percentage (loss divided by 2000 extent)
+Data quality flags (NULL, ZERO, VALID, INVALID)
+
+
+
+Primary Forest Transformation
+
+Input: ~75 rows (tropical countries only)
+Output: ~1,725 rows (75 countries × 23 years)
+Special Rules:
+
+Threshold always fixed at 30% (FAO standard)
+Tropical country flag added
+Loss status categorization (NO_DATA, NO_LOSS, LOSS_RECORDED)
+
+
+
+Carbon Data Transformation
+
+Input: ~495 rows (165 countries × 3 thresholds)
+Output: ~11,880 rows (165 countries × 24 years × 3 thresholds)
+Special Processing:
+
+Only processes thresholds 30%, 50%, and 75%
+Carbon flux status determination (SINK if negative, SOURCE if positive)
+Preserves negative values for net flux (indicates carbon absorption)
+
+
+
+Data Validation System
+Multi-Level Validation
+Structural Validation
+
+Verifies all required columns exist
+Confirms year columns follow expected patterns (YYYY format)
+Validates data types (numeric columns are actually numeric)
+
+Business Rule Validation
+
+Tropical Country Constraint: Primary forest data must only contain the 75 designated tropical countries
+Threshold Constraints: Carbon data must only have 30%, 50%, or 75% thresholds
+Year Range Validation:
+
+Tree cover: 2001-2024
+Primary forest: 2002-2023 (starts one year later)
+Carbon: 2001-2024
+
+
+
+Data Quality Validation
+
+Completeness Check: Ensures >70% non-null values in numeric columns
+Negative Value Detection: Flags inappropriate negative values (except for carbon net flux)
+Relationship Validation: Ensures primary forest loss never exceeds total tree cover loss for the same country-year
+
+Cleaning Operations
+
+Country name standardization (e.g., "USA" → "United States")
+Whitespace trimming
+Impossible value capping (loss cannot exceed forest extent)
+NULL value handling strategies
+
+SQLite Database Structure
+Database Location
+data/processed/forest.db
+Fact Tables
+fact_tree_cover_loss
+
+Primary Key: (country, year, threshold)
+Columns: country, year, threshold, tree_cover_loss_ha, extent_2000_ha, extent_2010_ha, area_ha, loss_rate_pct, data_quality_flag
+Row Count: ~31,680
+Indexes: On country-year, threshold, and year for query optimization
+
+fact_primary_forest
+
+Primary Key: (country, year)
+Columns: country, year, threshold (always 30), primary_forest_loss_ha, is_tropical, loss_status
+Row Count: ~1,725
+Indexes: On country-year and is_tropical flag
+
+fact_carbon
+
+Primary Key: (country, year, threshold)
+Columns: country, year, threshold, carbon_emissions_mg_co2e, carbon_emissions_annual_avg, carbon_removals_annual_avg, carbon_net_flux_annual_avg, carbon_density_mg_c_ha, carbon_flux_status
+Row Count: ~11,880
+Indexes: On country-year-threshold and carbon_flux_status
+
+Dimension Tables
+
+dim_location: Country reference with tropical flag
+dim_time: Year dimension with decade and period categorizations
+
+Optimized Views
+
+v_primary_forest_percentage: Pre-calculated primary vs total forest loss percentages
+v_carbon_intensity: Carbon emissions per hectare of forest lost
+v_annual_summary: Yearly aggregates for quick trend analysis
+
+Metadata System
+Semantic Metadata (Version Controlled)
+Stored in JSON files under config/semantic/:
+
+mappings.json: Natural language to column name mappings
+patterns.json: Query pattern recognition rules
+rules.json: Business logic and constraints
+constants.json: Domain constants (tropical countries list, valid thresholds)
+
+Runtime Metadata (Generated)
+Created during pipeline execution and stored in config/runtime/:
+
+Actual row counts per table
+Data completeness scores
+Processing timestamps
+Validation results
+Data quality metrics
+
+Database Connection and Querying
+Connecting to the Database
+Using SQLite command line:
+bashsqlite3 data/processed/forest.db
+Using Python:
+bashuv run python
+>>> import sqlite3
+>>> conn = sqlite3.connect('data/processed/forest.db')
+>>> cursor = conn.cursor()
+Sample Queries
+Basic forest loss query:
+sqlSELECT country, year, tree_cover_loss_ha 
+FROM fact_tree_cover_loss 
+WHERE country = 'Brazil' AND year = 2023 AND threshold = 30;
+Primary forest percentage:
+sqlSELECT t.country, t.year,
+       (p.primary_forest_loss_ha / t.tree_cover_loss_ha) * 100 as primary_pct
+FROM fact_tree_cover_loss t
+LEFT JOIN fact_primary_forest p 
+  ON t.country = p.country AND t.year = p.year
+WHERE t.threshold = 30 AND t.country = 'Brazil';
+Carbon intensity calculation:
+sqlSELECT c.carbon_emissions_mg_co2e / t.tree_cover_loss_ha as carbon_per_hectare
+FROM fact_tree_cover_loss t
+JOIN fact_carbon c 
+  ON t.country = c.country AND t.year = c.year AND t.threshold = c.threshold
+WHERE t.country = 'Indonesia' AND t.year = 2023;
+Testing Strategy
+Unit Testing Approach
+Transformer Tests
+Tests each transformer in isolation with small sample datasets (3-9 rows) to verify:
+
+Correct wide-to-long format conversion
+Proper year extraction from column names
+Accurate computed field calculations
+Data quality flag assignment
+
+Cleaner Tests
+Validates data cleaning operations:
+
+Country name standardization
+Negative value handling
+Impossible value capping
+NULL value processing
+
+Validator Tests
+Ensures business rules are enforced:
+
+Tropical country verification for primary forest
+Carbon threshold restrictions (30/50/75 only)
+Year range constraints
+Cross-table relationship validation
+
+Testing Commands
+Run all data pipeline tests:
+bashuv run pytest tests/unit/data/ -v
+Run specific test categories:
+bash# Transformer tests only
+uv run pytest tests/unit/data/test_transformers.py -v
+
+# Validator tests only
+uv run pytest tests/unit/data/test_validators.py -v
+
+# With coverage report
+uv run pytest tests/unit/data/ -v --cov=nexus.data.pipeline --cov-report=term-missing
+Test the complete pipeline:
+bash# Process sample data
+uv run python -m nexus.main --validate-only
+
+# Full pipeline with database creation
+uv run python -m nexus.main --drop-existing
+Database Validation Commands
+Check database structure:
+bashsqlite3 data/processed/forest.db ".tables"
+sqlite3 data/processed/forest.db ".schema fact_tree_cover_loss"
+Verify row counts:
+bashsqlite3 data/processed/forest.db "SELECT COUNT(*) FROM fact_tree_cover_loss;"
+sqlite3 data/processed/forest.db "SELECT COUNT(*) FROM fact_primary_forest;"
+sqlite3 data/processed/forest.db "SELECT COUNT(*) FROM fact_carbon;"
+Check data quality:
+bash# NULL value analysis
+sqlite3 data/processed/forest.db "SELECT COUNT(*) as nulls FROM fact_tree_cover_loss WHERE tree_cover_loss_ha IS NULL;"
+
+# Year range verification
+sqlite3 data/processed/forest.db "SELECT MIN(year), MAX(year) FROM fact_tree_cover_loss;"
+
+# Tropical country verification
+sqlite3 data/processed/forest.db "SELECT COUNT(DISTINCT country) FROM fact_primary_forest WHERE is_tropical = 1;"

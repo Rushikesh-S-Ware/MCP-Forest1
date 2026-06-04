@@ -1,0 +1,53 @@
+[project] # Project metadata
+name = "nexus" # Distribution name; also used by uv
+version = "0.1.0" # Version number
+description = "Global Forest Watch data processing and MCP server" # Short description
+readme = "README.md" # Path to README file
+requires-python = ">=3.12" # Minimum required Python version
+authors = [
+    { name = "Daniel Berhane Araya", email = "dberhan4@gmu.edu" } # Project authors
+]
+
+# "pyarrow==15.0.0" had a dependency conflict with pandas
+
+dependencies = [
+    "polars>=0.19.0", # Add this line
+    "pydantic>=2.5.0", # Data validation library
+    "pydantic-settings>=2.1.0", # Settings management library
+    "python-dotenv>=1.0.0", # Environment variables management library
+    "httpx>=0.26.0", # HTTP client
+    "numpy>=1.26.0", # Numerical computing library
+    "openpyxl>=3.1.0", # Excel file processing library
+    "fastexcel>=0.10.0", # Fast Excel reader (calamine engine) used by ExcelLoader
+    "structlog>=24.1.0", # Logging library
+    "python-json-logger>=2.0.7", # JSON logging library
+    "python-dotenv>=1.0.0", # Environment variables management library
+    "mcp>=1.15.0",
+    "jsonrpc-base>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0", # Testing framework
+    "pytest-cov>=4.1.0", # Code coverage tool
+    "pytest-asyncio>=0.23.0", # Asynchronous testing support
+    "ruff>=0.2.0", # Linter
+    "mypy>=1.8.0", # Static type checker
+    "pre-commit>=3.6.0", # Pre-commit hooks
+    "black>=24.1.0", # Code formatter
+    "ipykernel>=6.29.0", # Jupyter kernel
+    "notebook>=7.0.0", # Jupyter notebook
+]   
+
+[build-system]
+requires = ["hatchling"] # Build system requirements
+build-backend = "hatchling.build" # Build backend
+
+[tool.uv]
+python-preference = "only-managed" # Python version preference
+python-downloads = "manual" # Python downloads
+
+
+[tool.ruff]
+line-length = 100   # Maximum line length
+target-version = "py312" # Target Python version
