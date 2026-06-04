@@ -1,10 +1,10 @@
 """
-Forest Climate Analyzer - natural-language demo (with visuals).
+Forest Climate Analyzer - natural-language demo (countries + regions + visuals).
 
-Ask in plain English; get a grounded natural-language answer AND a relevant
-chart. Mirrors the MCP server: rule-based router extracts intent + entities,
-runs parameterized SQL over the warehouse, and (with a free Groq key) an LLM
-phrases the answer from ONLY the retrieved rows. Charts render alongside.
+Ask in plain English about countries OR subnational regions; get a grounded
+natural-language answer AND a relevant chart. Mirrors the MCP server: rule-based
+router extracts intent + entities, runs parameterized SQL over the warehouse,
+and (with a free Groq key) an LLM phrases the answer from ONLY the retrieved rows.
 """
 import os
 import re
@@ -39,6 +39,19 @@ def country_list():
     return q("SELECT DISTINCT country FROM fact_tree_cover_loss ORDER BY country")["country"].tolist()
 
 
+@st.cache_data
+def region_map():
+    """name_lower -> (country, region). Collisions resolved by largest total loss."""
+    rdf = q("SELECT country, subnational1, SUM(tree_cover_loss_ha) t "
+            "FROM fact_subnational_tree_cover_loss GROUP BY country, subnational1 ORDER BY t DESC")
+    m = {}
+    for _, r in rdf.iterrows():
+        nm = str(r["subnational1"]).strip().lower()
+        if len(nm) >= 4 and nm != "?" and nm not in m:
+            m[nm] = (r["country"], r["subnational1"])
+    return m
+
+
 ALIASES = {
     "united states": "United States", "usa": "United States", "us": "United States", "america": "United States",
     "uk": "United Kingdom", "britain": "United Kingdom",
@@ -62,27 +75,53 @@ def detect_country(text):
     return None
 
 
+def detect_region(text):
+    t = text.lower()
+    rm = region_map()
+    for nm in sorted(rm, key=len, reverse=True):
+        if re.search(r"\b" + re.escape(nm) + r"\b", t):
+            return rm[nm]
+    return None
+
+
+def detect_year(text):
+    yrs = [int(x) for x in re.findall(r"20[0-2]\d", text) if 2001 <= int(x) <= 2024]
+    return yrs[-1] if yrs else None
+
+
 def parse(text):
     t = text.lower()
-    m = re.findall(r"\b(20[0-2]\d)\b", text)
-    yrs = [int(x) for x in m if 2001 <= int(x) <= 2024]
     thr_m = re.search(r"\b(\d{1,2})\s*%", text)
     thr = int(thr_m.group(1)) if thr_m and int(thr_m.group(1)) in (0, 10, 15, 20, 25, 30, 50, 75) else 30
-    e = {"country": detect_country(text), "year": yrs[-1] if yrs else None, "threshold": thr}
+    e = {"country": detect_country(text), "region": None, "year": detect_year(text), "threshold": thr}
+
     if re.search(r"\b(carbon|co2|emission|emissions|greenhouse)\b", t):
         e["metric"] = "carbon"
     elif re.search(r"\b(primary|virgin|old[\s-]?growth|pristine)\b", t):
         e["metric"] = "primary"
     else:
         e["metric"] = "tree_cover"
+
     if re.search(r"\b(state|states|province|provinces|region|regions|subnational)\b", t):
-        e["scope"] = "subnational"
+        base = "subnational"
     elif re.search(r"\b(top|most|highest|worst|rank|leading|biggest)\b", t):
-        e["scope"] = "rank"
+        base = "rank"
     elif re.search(r"\b(trend|over time|since|history|historical|each year|by year)\b", t):
-        e["scope"] = "trend"
+        base = "trend"
     else:
-        e["scope"] = "single"
+        base = "single"
+
+    reg = detect_region(text)
+    if reg and (e["country"] is None or e["country"] == reg[0]):
+        e["country"], e["region"] = reg[0], reg[1]
+        if base == "trend":
+            e["scope"] = "region_trend"
+        elif base in ("rank", "subnational"):
+            e["scope"] = base
+        else:
+            e["scope"] = "region"
+    else:
+        e["scope"] = base
     return e
 
 
@@ -100,10 +139,25 @@ def get_trend(country, metric, thr):
     return q(f"SELECT year, {VAL[metric]} AS value FROM {TBL_C[metric]} WHERE {where} ORDER BY year", params)
 
 
+def get_region_trend(country, region, metric):
+    has_thr = metric != "primary"
+    where = "country=? AND subnational1=?" + (" AND threshold=30" if has_thr else "")
+    return q(f"SELECT year, {VAL[metric]} AS value FROM {TBL_S[metric]} WHERE {where} ORDER BY year", (country, region))
+
+
 def retrieve(e):
     metric, scope = e["metric"], e["scope"]
     thr = 30 if metric != "tree_cover" else e["threshold"]
     has_thr = metric != "primary"
+
+    if scope == "region":
+        y = e["year"] or 2023
+        where = "country=? AND subnational1=? AND year=?" + (" AND threshold=30" if has_thr else "")
+        rows = q(f"SELECT {VAL[metric]} AS value FROM {TBL_S[metric]} WHERE {where}", (e["country"], e["region"], y))
+        return rows, {"scope": "region", "year": y}
+
+    if scope == "region_trend":
+        return get_region_trend(e["country"], e["region"], metric), {"scope": "region_trend"}
 
     if scope == "subnational" and e["country"]:
         y = e["year"] or 2023
@@ -135,10 +189,16 @@ def retrieve(e):
 def templated_answer(e, rows, meta):
     if rows.empty:
         if not e["country"] and meta.get("scope") != "rank":
-            return "I couldn't spot a country in your question. Try *\"forest loss in Brazil in 2023\"* or *\"top carbon-emitting countries\"*."
-        return "No data for that combination. Try another year (2001–2024) or country."
+            return "I couldn't spot a country or region in your question. Try *\"forest loss in Brazil in 2023\"*, *\"Djelfa forest loss\"*, or *\"top carbon-emitting countries\"*."
+        return "No data for that combination. Try another year (2001–2024)."
     m, unit = LABEL[e["metric"]], UNIT[e["metric"]]
     s = meta["scope"]
+    if s == "region":
+        extra = " (30% canopy)" if e["metric"] == "tree_cover" else ""
+        return f"**{e['region']} ({e['country']})** had **{fnum(rows['value'].iloc[0])} {unit}** of {m} in **{meta['year']}**{extra}."
+    if s == "region_trend":
+        tot = rows["value"].sum(); peak = rows.loc[rows["value"].idxmax()]
+        return f"**{e['region']} ({e['country']})** {m} totaled **{fnum(tot)} {unit}** over {len(rows)} years; worst year was **{int(peak['year'])}** ({fnum(peak['value'])} {unit})."
     if s == "single":
         extra = f" (at {meta['threshold']}% canopy)" if e["metric"] == "tree_cover" else ""
         return f"**{e['country']}** had **{fnum(rows['value'].iloc[0])} {unit}** of {m} in **{meta['year']}**{extra}."
@@ -149,8 +209,7 @@ def templated_answer(e, rows, meta):
         lines = [f"{i+1}. {r['region']} — {fnum(r['value'])} {unit}" for i, r in rows.reset_index(drop=True).iterrows()]
         return f"**Top regions in {e['country']} by {m} ({meta['year']}):**\n\n" + "\n".join(lines)
     if s == "trend":
-        tot = rows["value"].sum()
-        peak = rows.loc[rows["value"].idxmax()]
+        tot = rows["value"].sum(); peak = rows.loc[rows["value"].idxmax()]
         return f"**{e['country']}** {m} totaled **{fnum(tot)} {unit}** over {len(rows)} years; worst year was **{int(peak['year'])}** ({fnum(peak['value'])} {unit})."
     return "Here's what I found."
 
@@ -179,24 +238,24 @@ def llm_answer(text, rows):
 
 
 def render_visual(e, rows, meta):
-    """Every answer gets a relevant chart."""
     s = meta.get("scope")
     if rows.empty:
         return
-    if s == "single":
-        unit = UNIT[e["metric"]]
+    unit = UNIT[e["metric"]]
+    if s in ("single", "region"):
+        place = e["region"] if s == "region" else e["country"]
         c1, c2 = st.columns([1, 2])
-        c1.metric(f"{e['country']} · {meta['year']}", f"{fnum(rows['value'].iloc[0])} {unit}",
-                  help=LABEL[e["metric"]])
-        tr = get_trend(e["country"], e["metric"], 30 if e["metric"] != "tree_cover" else e["threshold"])
+        c1.metric(f"{place} · {meta['year']}", f"{fnum(rows['value'].iloc[0])} {unit}", help=LABEL[e["metric"]])
+        tr = (get_region_trend(e["country"], e["region"], e["metric"]) if s == "region"
+              else get_trend(e["country"], e["metric"], 30 if e["metric"] != "tree_cover" else e["threshold"]))
         if not tr.empty:
-            c2.caption(f"{e['country']} — {LABEL[e['metric']]} over time ({unit})")
+            c2.caption(f"{place} — {LABEL[e['metric']]} over time ({unit})")
             c2.line_chart(tr.set_index("year")["value"])
     elif s == "rank":
         st.bar_chart(rows.set_index("country")["value"])
     elif s == "subnational":
         st.bar_chart(rows.set_index("region")["value"])
-    elif s == "trend":
+    elif s in ("trend", "region_trend"):
         st.line_chart(rows.set_index("year")["value"])
 
 
@@ -211,7 +270,7 @@ examples = [
     "How much forest did Brazil lose in 2023?",
     "Top 10 countries for tree cover loss since 2020",
     "Which states in Indonesia emit the most carbon?",
-    "Primary forest loss trend for DR Congo",
+    "Djelfa forest loss trend",
 ]
 st.write("**Try:**")
 cols = st.columns(2)
@@ -223,16 +282,16 @@ for i, ex in enumerate(examples):
 if "history" not in st.session_state:
     st.session_state.history = []
 
-for role, msg, payload in st.session_state.history:
+for role, msg in st.session_state.history:
     with st.chat_message(role):
         st.markdown(msg)
 
-prompt = st.chat_input("Ask about forest loss or carbon...") or clicked
+prompt = st.chat_input("Ask about a country or region...") or clicked
 
 if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
-    st.session_state.history.append(("user", prompt, None))
+    st.session_state.history.append(("user", prompt))
 
     e = parse(prompt)
     rows, meta = retrieve(e)
@@ -244,6 +303,6 @@ if prompt:
         with st.expander("How it was answered (parsed query + data)"):
             st.write(f"Interpreted as: `{e}`")
             st.dataframe(rows, use_container_width=True)
-    st.session_state.history.append(("assistant", ans, None))
+    st.session_state.history.append(("assistant", ans))
 
 st.caption(f"Source: {SOURCE}  ·  Demo of the Nexus-MCP capstone. Add LLM_API_KEY (free Groq) for full natural-language answers.")
