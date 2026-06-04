@@ -9,7 +9,7 @@
 ![LLM](https://img.shields.io/badge/LLM-Llama%203.3%20(Groq)-000000)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**🔗 Live demo:** _<paste your Streamlit / Hugging Face Space URL here>_
+**🔗 Live demo:**https://mcp-forest1.streamlit.app/
 
 <!-- Add a screenshot/GIF: ![demo](assets/demo.png) -->
 
